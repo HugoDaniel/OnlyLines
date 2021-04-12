@@ -1,0 +1,13 @@
+{
+  "name": "only-lines",
+  "version": "1.0.0",
+  "main": "onlylines.js",
+  "license": "MIT",
+  "dependencies": {
+    "animejs": "^3.2.1",
+    "automerge": "^0.14.2",
+    "cuid": "^2.1.8",
+    "perge": "^1.2.1",
+    "pixi.js": "^6.0.2"
+  }
+}

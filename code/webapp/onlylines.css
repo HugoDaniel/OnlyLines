@@ -1,0 +1,24 @@
+/**
+ * SVG Optimizations
+ */
+svg {
+  touch-action: none;
+  shape-rendering: optimizeSpeed;
+  text-rendering: optimizeSpeed;
+  image-rendering: optimizeSpeed;
+}
+
+svg line {
+  stroke: blue;
+  stroke-dasharray: 12;
+}
+
+body {
+  width: 100vw;
+  height: 100vh;
+  padding: 0;
+  margin: 0;
+  overflow: none;
+  background: white;
+  background: radial-gradient(circle, rgba(0,0,0,0) 70%, rgba(0,0,0,0.12788865546218486) 100%);
+}
