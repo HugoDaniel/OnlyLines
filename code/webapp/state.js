@@ -16,100 +16,297 @@ class State {
   })
   docId = undefined
 
-  constructor() {
-    window.location.hash = this.actorId
+  constructor(w, h) {
+    this.view = new ViewState(w, h)
     this.docId = cuid()
     this.createDoc(this.docId)
-    /*
-    console.log(this.perge, Verb, window.docSet, this.peer)
+    this.perge.subscribe(this.docId, this.view.update)
 
-    const l1 = new Verb.geom.Line([0, 0, 0], [10, 10, 0])
-    const l2 = new Verb.geom.Line([0, 10, 0], [10, 0, 0])
-    console.log(l1, l2)
-    // const result = Verb.eval.Intersect.curves(l1._data, l2._data, 0.01)
-    const result = Verb.eval.Intersect.curves(l1._data, l2._data, 0.01)
-    console.log(result);
-    */
   }
 
   /** Creates a new document in the docSet */
   createDoc(id = "default") {
-    return this.perge.select(id)(Automerge.change, d => {
-      d.fullLines = []
-      d.pathLines = []
-      d.points = []
+    return this.perge.select(id)(Automerge.change, doc => {
+      // Lines are always infinite
+      doc.lines = []
+      // Each element in the canvas has a relation to all other elements
+      doc.relations = []
+      // Some points can imply more than one relationship, these
+      // are called "merged points" and are recalculated at the
+      // end of the interaction
+      doc.mergedPoints = []
     })
   }
 
-  addFullLine(line) {
-    if (!line || !(line instanceof Line)) {
-      throw new Error(`Cannot add a new full line, the 'line' argument is \
-        not a valid Line instance: ${line}`)
-    }
+  addLine(x, y) {
     if (!this.docId) {
       throw new Error(`Cannot add a full line, no 'docId' is set: \
         ${this.docId}`)
     }
-    this.perge.select(this.docId)(Automerge.change, d => {
-      console.log('ADDING LINE', line, line.id)
-      d.fullLines.push(line.data)
+    const lineId = cuid()
+    const line = [lineId, [x, y], [0, 0]]
+    this.perge.select(this.docId)(Automerge.change, doc => {
+      // Create the relations with all other items
+      for(let i = 0; i < doc.lines.length; i++) {
+        doc.relations.push([cuid(), [lineId, Line.id(doc.lines[i])]])
+      }
+      // After the relations are created, the line is pushed, this
+      // is important to happen after the relations are created to
+      // avoid creating a relationship with itself
+      doc.lines.push(line)
     })
+    // Copy the line and return it
+    const result = line.slice(0)
+    result[1] = line[1].slice(0)
+    result[2] = line[2].slice(0)
+    return result
   }
 
-  updateFullLine(line) {
+  updateLine(line) {
     if (!line || !(line instanceof Line)) {
-      throw new Error(`Cannot update the full line, the 'line' argument is \
-        not a valid Line instance: ${line}`)
+      throw new Error(`Cannot update the full line, the 'line' argument is not a valid Line instance: ${line}`)
     }
     if (!this.docId) {
-      throw new Error(`Cannot update the full line, no 'docId' is set: \
-        ${this.docId}`)
+      throw new Error(`Cannot update the full line, no 'docId' is set: ${this.docId}`)
     }
-    this.perge.select(this.docId)(Automerge.change, d => {
-      const lineIndex = d.fullLines.findIndex(
-        (fullLine) => fullLine[2] === line.id)
-        // ^ fullLine is an array like [start, end, id]
+    this.perge.select(this.docId)(Automerge.change, doc => {
+      const lineIndex = doc.lines.findIndex(
+        (l) => Line.id(l) === line.id)
+        // ^ line is an array like [id, start, end]
 
       if (lineIndex === -1) {
         console.warn('Cannot update line: not found. Was it added to the state?')
         return;
       }
 
-      d.fullLines[lineIndex] = line.data
+      doc.lines[lineIndex] = line.data
     })
   }
+}
 
+/**
+ * A relation can have multiple points (a Line related to a Circle can produce
+ * up to two points). Each Point keeps track of the corresponding relations
+ * that produce it and thus there can be multiple relations per point.
+ * Points next to each other are merged, and new "strong" relationships
+ * are produced.
+ */
+class ViewState {
+  allThings = new Map()
+  updateCallbacks = []
+  view = {
+    bounds: { w: 0, h: 0, diagonal: 0 },
+    points: [],
+    lines: [],
+  }
+
+  constructor(w, h) {
+    this.view.bounds.w = w
+    this.view.bounds.h = h
+    this.view.bounds.diagonal = Math.hypot(w, h)
+  }
+
+  update = (doc) => {
+    // Update full lines
+    doc.lines.forEach(line => {
+      if (this.allThings.has(Line.id(line))) {
+        this.allThings.get(Line.id(line)).updateFrom(line)
+      } else {
+        this.allThings.set(Line.id(line), new Line(line))
+      }
+    })
+
+    // Update relations, must be done at the end
+    doc.relations.forEach(r => {
+      if (this.allThings.has(Relation.id(r))) {
+        this.allThings.get(Relation.id(r)).updateFrom(Relation.relatedIds(r))
+      } else {
+        // Get all the elements in this relation
+        // and create a new Relation instance
+        this.allThings.set(Relation.id(r), new Relation(r,
+          Relation.relatedIds(r).map(elemId =>
+            this.allThings.get(elemId))))
+      }
+    })
+
+    // Finally process the view to send to renderers
+    // Lines and Circles
+    this.view.lines = []
+    for(const thing of this.allThings.values()) {
+      if (thing instanceof Line) {
+        this.view.lines.push(thing.createFullLine(this.view.bounds))
+      }
+    }
+
+    // This goes through the relations and finds the points
+    // And builds the list of full lines
+    this.view.points = []
+    doc.relations.forEach(r => {
+      const relation = this.allThings.get(Relation.id(r))
+      relation.points().forEach(pt => {
+        // Check if the intersection was possible
+        if (pt !== undefined) {
+          this.view.points.push(Point.create(relation, pt))
+        }
+      })
+    })
+
+    
+    // Call the update callbacks with this class
+    this.callListeners()
+  }
+
+  addRelationPoints(relation) {
+    for(let i = 0; i < this.points.length; i++) {
+      const pt = this.points[i]
+      if (pt.hasRelation(relation)) {
+        relation
+      }
+    }
+  }
+
+  callListeners() {
+    for(let i = 0; i < this.updateCallbacks.length; i++) {
+      this.updateCallbacks[i](this.view)
+    }
+  }
   /**
    * Subscribe to changes on the current document.
    * Returns a function that cancels/stops the subscription when called.
    */
-  onChange(f) {
-    return this.perge.subscribe(this.docId, f)
+  onUpdate(f) {
+    this.updateCallbacks.push(f)
+  }
+}
+
+class Point {
+  constructor(relation, ptData) {
+    Assert.isNonEmptyArray(ptData, 'Cannot create Point')
+    Assert.isInstanceOf(relation, Relation, 'Cannot create Point')
+    this.data = ptData 
+    this.relation = relation
+  }
+
+  static create(relation, ptData) {
+    Assert.isNonEmptyArray(ptData, 'Cannot create Point object')
+    Assert.isInstanceOf(relation, Relation, 'Cannot create Point object')
+    return ({
+      x: ptData[0],
+      y: ptData[1],
+      id: relation.id
+    })
+  }
+
+  hasRelation(relation) {
+    return this.relation.id === relation.id
+  }
+
+  get x() {
+    return this.data[0]
+  }
+  get y() {
+    return this.data[1]
+  }
+
+  distanceTo(x, y) {
+     return Math.pow(this.x - x, 2) + Math.pow(this.y - y, 2)
+  }
+}
+
+/** Intersection Point */
+class Relation {
+  // elements are the build element instances (Line, Circle, etc)
+  constructor(data, elements) {
+    Relation.assertRelationElements(elements)
+    this.data = data
+
+    this.elements = elements
+  }
+
+  get id() {
+    return Relation.id(this.data)
+  }
+
+  get relatedIds() {
+    return Relation.relatedIds(this.data)
+  }
+
+  updateFrom(data) {
+    Assert.isNonEmptyArray(data, 'Cannot update Relation from data')
+    for(let i = 0; i < data[1].length; i++) {
+      this.data[1][i] = data[1][i]
+    }
+  }
+
+  static id(data) {
+    Assert.isNonEmptyArray(data)
+    Assert.isStringId(data[0])
+    return data[0]
+  }
+
+  static relatedIds(data) {
+    Assert.isNonEmptyArray(data)
+    Assert.isNonEmptyArray(data[1])
+    Assert.isStringId(data[1][0])
+    Assert.isStringId(data[1][0])
+    return data[1]
+  }
+
+  /**
+   * Calculates the intersections between the elements
+   * and returns the points.
+   **/
+  points(dest = [new Array(2)]) {
+    const elem1 = this.elements[0]
+    const elem2 = this.elements[1]
+    // Intersect two Line's
+    if (elem1 instanceof Line) {
+      if (elem2 instanceof Line) {
+        dest[0] = elem1.intersectWithLine(elem2, dest[0])
+      }
+    }
+    return dest
+  }
+
+  static assertRelationElements(elements) {
+    if (!elements.every(this.isValidElement)) {
+      throw new Error(`Cannot create relation with invalid elements: ${JSON.stringify(elements)}`)
+    }
+    if (elements.length < 2) {
+      throw new Error(`Cannot create relation, at least 2 elements are needed and got ${elements.length} in ${JSON.stringify(elements)}`)
+    }
+  }
+
+  static isValidElement(element) {
+    return element instanceof Line
+  }
+}
+
+class Circle {
+  center // Relation
+  radius = 0
+
+  constructor() {
   }
 }
 
 class Line {
-  fullLine = new Array(2)
   constructor(l) {
     Assert.isLineData(l, "Unable to construct a new Line")
     this.data = l
-    // l[2] is the line id
     // this class has getters for all the data points (x,y,id etc...)
-    if (!l[2]) {
+    if (!l[0]) {
       // Create the id if it is not set
       l.push(cuid())
     }
-
-    this.fullLine[0] = new Array(2)
-    this.fullLine[1] = new Array(2)
   }
-
 
   /**
    * Creates a full line for the square given by the w (width)
    * and h (height) dimensions. 
    */
-  createFullLine(w, h, len) {
+  createFullLine({ w, h, diagonal }) {
+    const len = diagonal
     let originY = this.yFor(- w / 2)
     let originX
     if (originY > (h / 2)) {
@@ -128,60 +325,61 @@ class Line {
     const finalX = originX + len * Math.cos(angle)
     const finalY = originY + len * Math.sin(angle)
 
-    this.fullLine[0][0] = originX
-    this.fullLine[0][1] = originY
-    this.fullLine[1][0] = finalX
-    this.fullLine[1][1] = finalY
+    const fullLine = {
+      start: [originX, originY],
+      end: [finalX, finalY],
+      id: this.id
+    }
 
-    return this.fullLine
+    return fullLine
   }
 
   get start() {
-    return this.data[0]
+    return this.data[1]
   }
   get end() {
-    return this.data[1]
+    return this.data[2]
   }
 
   get x1() {
-    return this.data[0][0]
+    return this.data[1][0]
   }
   set x1(value) {
     Assert.isNumber(value, `Cannot set line.x1 with ${value}.\
       It must be a number.`)
-    this.data[0][0] = value
+    this.data[1][0] = value
   }
   get x2() {
-    return this.data[1][0]
+    return this.data[2][0]
   }
   set x2(value) {
     Assert.isNumber(value, `Cannot set line.x2 with ${value}.\
       It must be a number.`)
-    this.data[1][0] = value
+    this.data[2][0] = value
   }
   get y1() {
-    return this.data[0][1]
+    return this.data[1][1]
   }
   set y1(value) {
     Assert.isNumber(value, `Cannot set line.y1 with ${value}.\
       It must be a number.`)
-    this.data[0][1] = value
+    this.data[1][1] = value
   }
   get y2() {
-    return this.data[1][1]
+    return this.data[2][1]
   }
   set y2(value) {
     Assert.isNumber(value, `Cannot set line.y2 with ${value}.\
       It must be a number.`)
-    this.data[1][1] = value
+    this.data[2][1] = value
 
   }
   get id() {
-    return this.data[2]
+    return this.data[0]
   }
   set id(value) {
     Assert.isStringId(value, "Cannot set id for line")
-    this.data[2] = value
+    this.data[0] = value
   }
 
   get m() {
@@ -220,7 +418,7 @@ class Line {
     Assert.isNumber(endX, "Unable to split line 'endX' arg is invalid")
     Assert.isNumber(endY, "Unable to split line 'endY' arg is invalid")
 
-    // Initialize the result array
+    // Initialize and allocate the result array
     let result = dest
     if (!result) {
       result = new Array(pts)
@@ -278,13 +476,10 @@ class Line {
     return ([[startX, startY], [endX, endY]])
   }
 
-  distanceToPoint(pt) {
-    if (!Array.isArray(pt) || pt.length < 2 || typeof pt[0] !== "number" || typeof pt[1] !== "number") {
-      throw new Error(`Cannot find distance to point, expected an array argument and got ${pt} instead`)
-    }
+  distanceToPoint(x0, y0) {
+    Assert.isNumber(x0, "Cannot find distance to point")
+    Assert.isNumber(y0, "Cannot find distance to point")
 
-    const x0 = pt[0]
-    const y0 = pt[1]
     const x1 = this.x1
     const y1 = this.y1
     const x2 = this.x2
@@ -292,6 +487,40 @@ class Line {
 
     return (Math.abs((x2 - x1)*(y1 - y0) - (x1 - x0)*(y2 - y1)) /
             Math.hypot(x2 - x1, y2 - y1))
+  }
+
+  get nurbs() {
+    return new Verb.geom.Line([this.x1, this.y1, 0], [this.x2, this.y2, 0])
+  }
+
+  intersectWithLine(l, dest = new Array(2)) {
+    if ( !(l instanceof Line) ) {
+      throw new Error(`Cannot intersect line with 'l', expected a Line and got ${JSON.stringify(l)}`)
+    }
+
+    if (this.isEqual(l)) {
+      // Coincident lines, no intersection is possible
+      return undefined
+    }
+    const x1 = this.x1
+    const x2 = this.x2
+    const x3 = l.x1
+    const x4 = l.x2
+    const y1 = this.y1
+    const y2 = this.y2
+    const y3 = l.y1
+    const y4 = l.y2
+    const epsilon = 0.001
+
+    const d = (x1 - x2)*(y3 - y4) - (y1 - y2)*(x3 - x4)
+    if (d < epsilon && d > -epsilon) {
+      // No intersection, lines are parallel
+      return undefined
+    }
+    dest[0] = ((x1*y2 - y1*x2)*(x3 - x4) - (x1 - x2)*(x3*y4 - y3*x4)) / d
+    dest[1] = ((x1*y2 - y1*x2)*(y3 - y4) - (y1 - y2)*(x3*y4 - y3*x4)) / d
+
+    return dest
   }
 
   nearestPointTo(pt) {
@@ -313,21 +542,42 @@ class Line {
       ])
   }
 
-  isEqual(data) {
+  isDataEqual(data) {
     Assert.isLineData(data, "Cannot compare this line")
     return (
-      this.x1 === data[0][0] && this.x2 === data[1][0]
-      && this.y1 === data[0][1] && this.y2 === data[1][1])
+      this.x1 === data[1][0] && this.x2 === data[2][0]
+      && this.y1 === data[1][1] && this.y2 === data[2][1])
+  }
+
+  isEqual(l, precision = 1000) {
+    if ( !(l instanceof Line) ) {
+      throw new Error(`Cannot compare line with 'l', expected a Line and got ${JSON.stringify(l)}`)
+    }
+    Assert.isPositiveNumber(precision, `Comparing lines must have a positive precision specified, instead got ${precision}`)
+
+    const b1 = Math.floor(this.b * precision) / precision
+    const b2 = Math.floor(l.b * precision) / precision
+    const m1 = Math.floor(this.m * precision) / precision
+    const m2 = Math.floor(l.m * precision) / precision
+
+    return (m1 === m2 && b1 === b2)
   }
 
   updateFrom(data) {
     Assert.isLineData(data, "Cannot update line")
-    this.x1 = data[0][0];
-    this.x2 = data[1][0];
-    this.y1 = data[0][1];
-    this.y2 = data[1][1];
+    this.x1 = data[1][0]
+    this.x2 = data[2][0]
+    this.y1 = data[1][1]
+    this.y2 = data[2][1]
   }
 
+  static id(data) {
+    if (!Array.isArray(data) || data.length < 3) {
+      throw new Error(`Cannot get id from Line data: ${data}, needs to be an array with at least 3 elements`)
+    }
+    // [0] is the line id, [1] and [2] are the line points
+    return data[0]
+  }
 }
 
 export { State, Line }

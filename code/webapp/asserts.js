@@ -1,10 +1,29 @@
 class Assert {
+  static isNonEmptyArray(value, errorMsg = "Invalid array") {
+    if (!Array.isArray(value) || value.length === 0) {
+      console.trace()
+      throw new Error(`${errorMsg}, expected a non empty array and got ${JSON.stringify(value)} instead`)
+    }
+  }
   static isNumber(value, errorMsg = "Invalid number") {
     if (value === undefined || value === null || typeof value !== "number" || isNaN(value)) {
       console.trace()
       throw new Error(`${errorMsg}, expected a number and got ${value} instead`)
     }
   }
+  static isIdentifiable(value, errorMsg) {
+    if (value === undefined || value === null || typeof value !== "object" || !Assert.isStringId(value.id)) {
+      console.trace()
+      throw new Error(`${errorMsg}, expected an identifiable object and got ${JSON.stringify(value)} instead`)
+    }
+  }
+  static isInstanceOf(value, instance, errorMsg) {
+    if (!(value instanceof instance)) {
+      console.trace()
+      throw new Error(`${errorMsg}, expected an instance of ${instance.name} and got ${JSON.stringify(value)} instead`)
+    }
+  }
+
 
   static isPositiveNumber(value, errorMsg) {
     this.isNumber(value, errorMsg)
@@ -14,15 +33,15 @@ class Assert {
   }
 
   static isLineData(l, msg = "Line data error") {
-    if (!Array.isArray(l) || l.length < 2 || !Array.isArray(l[0]) || !Array.isArray(l[1])) {
+    if (!Array.isArray(l) || l.length < 2 || !Array.isArray(l[1]) || !Array.isArray(l[2])) {
       throw new Error(`${msg}, expected an array argument and got ${l} instead`)
     }
     // l is [[x1, y1], [x2, y2]]
     if (
-      l[0][0] === undefined || l[0][0] === null || typeof l[0][0] !== "number"
-     || l[1][0] === undefined || l[1][0] === null || typeof l[1][0] !== "number"
-     || l[0][1] === undefined || l[0][1] === null || typeof l[0][1] !== "number"
-     || l[1][1] === undefined || l[1][1] === null || typeof l[1][1] !== "number") {
+      l[1][0] === undefined || l[1][0] === null || typeof l[1][0] !== "number"
+     || l[2][0] === undefined || l[2][0] === null || typeof l[2][0] !== "number"
+     || l[1][1] === undefined || l[1][1] === null || typeof l[1][1] !== "number"
+     || l[2][1] === undefined || l[2][1] === null || typeof l[2][1] !== "number") {
       throw new Error(`${msg}, expected an array of \
 [[x1,y1],[x2,y2]], but instead got ${JSON.stringify(l)}`)
     }
